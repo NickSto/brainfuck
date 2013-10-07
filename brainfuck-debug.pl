@@ -1,5 +1,5 @@
 #!/usr/bin/perl -w
-#brainfuckdebug.pl
+#brainfuckpublishdebug.pl
 =begin comment
 
 My attempt at a brainfuck interpreter. This is the debugging version.
@@ -23,7 +23,7 @@ option. Then you will have to enter characters one per line, one at a time.
 
 Comment removal:
 	In the preparation phase, it removes all non-bf characters from the code,
-meaning extra formatting and comments in the code have no impact on speed.
+so extra formatting and comments in the code have no impact on speed.
 NOTE: Currently the bf characters are only the canonical eight: +-<>,.[]
 semi-official ones like # and ! don't count.
 
@@ -37,7 +37,7 @@ use strict;
 
 my $DEBUG = 0;
 my $LOOP_DETECT = 0;
-my $MEMORY = 30_000;
+my $MEMSIZE = 30_000;
 
 # Get program filehandle
 my $program_file;
@@ -121,30 +121,21 @@ for (my $counter = 0; $counter < @program; $counter++) {
 	# MAIN PARSER
 	
 	if ($program[$counter] eq '+') {
-		$mem[$ptr]++;
-		if ($mem[$ptr] > 255) {
-			$mem[$ptr] = 0;
-		}
+		$mem[$ptr] = ++$mem[$ptr] % 256;
 		#debug
 		if ($DEBUG && $program[$counter] ne $program[$counter + 1]) {
 			print "$program[$counter] mem: $mem[$ptr]\n";
 		}
 		
 	} elsif ($program[$counter] eq '-') {
-		$mem[$ptr]--;
-		if ($mem[$ptr] < 0) {
-			$mem[$ptr] = 255;
-		}
+		$mem[$ptr] = --$mem[$ptr] % 256;
 		#debug
 		if ($DEBUG && $program[$counter] ne $program[$counter + 1]) {
 			print "$program[$counter] mem: $mem[$ptr]\n";
 		}
 		
 	} elsif ($program[$counter] eq '>') {
-		$ptr++;
-		if ($ptr >= $MEMORY) {
-			$ptr = 0;
-		}
+		$ptr = ++$ptr % $MEMSIZE;
 		#debug
 		if ($DEBUG && $program[$counter] ne $program[$counter + 1]) {
 			unless (defined($mem[$ptr])) {
@@ -154,10 +145,7 @@ for (my $counter = 0; $counter < @program; $counter++) {
 		}
 		
 	} elsif ($program[$counter] eq '<') {
-		$ptr--;
-		if ($ptr < 0) {
-			$ptr = $MEMORY - 1;
-		}
+		$ptr = --$ptr % $MEMSIZE;
 		#debug
 		if ($DEBUG && $program[$counter] ne $program[$counter + 1]) {
 			unless (defined($mem[$ptr])) {
