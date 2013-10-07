@@ -1,372 +1,143 @@
 #!/usr/bin/perl -w
-#brainfuckpublishdebug.pl
 =begin comment
 
-My attempt at a brainfuck interpreter. This is the debugging version.
+A brainfuck interpreter.
+This is the debug version. When it encounters a '#' character in the brainfuck
+code, it will print the contents of memory.
 
-It will print out every instruction and its results (on memory, the instruction
-pointer, etc), unless there is a series of duplicate repeated instructions.
-Then it will wait until the last instruction in the string to print.
-Example:
-If it encounters "->+++++" it will print three times: once for "-", once for
-">", and once at the last "+".
-
-Usage:
-Specify the brainfuck program as a command line option or interactively.
+    USAGE:
+Interactive:     Run script, paste code at prompt, enter EOF (Ctrl+D usually).
+Non-Interactive: Run script with brainfuck program file as command line option.
 
 Input buffer:
-	Uses an input buffer so that you can entire an entire line of text at a time
+  Uses an input buffer so that you can enter an entire line of text at a time
 and the program will read as much of it as it needs, when it needs.
-CAUTION: "enter" characters (newlines) count.
-You can turn off input buffering by adding "nobuffer" as a second command line
-option. Then you will have to enter characters one per line, one at a time.
+NOTE: Since you use "enter" to submit a line, there's no way to enter newlines.
+
+Use valid code:
+  This doesn't check the brainfuck code for validity. It assumes all open
+brackets have matching closing brackets and are properly nested.
 
 Comment removal:
-	In the preparation phase, it removes all non-bf characters from the code,
-so extra formatting and comments in the code have no impact on speed.
-NOTE: Currently the bf characters are only the canonical eight: +-<>,.[]
-semi-official ones like # and ! don't count.
+  In the preparation phase, it removes all non-bf characters from the code, so
+extra formatting and comments have no impact on speed.
+NOTE: Valid bf characters are only the canonical eight: +-<>[],.
+Semi-official ones like # and ! will be removed.
 
-Notes:
-	This doesn't check the brainfuck code for validity. Meaning it assumes all
-open brackets have matching closing brackets and are properly nested.
+Language implementation details:
+  Cell values are 0 to 255 with wrapping.
+  It uses 30000 memory cells with wrapping, as in the original implementation.
 
-=cut comment
-
+=end comment
+=cut
 use strict;
 
-my $DEBUG = 0;
-my $LOOP_DETECT = 0;
+# Number of memory cells
 my $MEMSIZE = 30_000;
 
-# Get program filehandle
-my $program_file;
-if (@ARGV) {
-	$program_file = shift(@ARGV);
-} else {
-	print "Enter the filename of the program:\n";
-	chomp($program_file = <STDIN>);
-}
-open(my $program_fh, "<", $program_file) or
-	die "Error: Cannot open program file $program_file: $!";
-
-
-my $buffer = 1;
-my $break_point = -1;
-my $break_final = 0;
-my $break_step = 0;
-if (@ARGV) {
-	my $arg2 = shift(@ARGV);
-	# Don't use buffer?
-	$buffer = lc $arg2 ne "nobuffer";
-	# set breakpoint?
-	if ($arg2 =~ m/break/i) {
-		$break_point = shift(@ARGV);
-		$break_final = lc $arg2 eq "breakfinal";
-		$break_step = lc $arg2 eq "breakstep";
-	}
-}
-
 # Read in program, remove comments, turn into array of characters
+print STDERR "Enter brainfuck code, then an EOF character to signal the end.\n"
+  . "Usually this is Ctrl+D.\n";
 my @program;
-while (<$program_fh>) {
-	s/[^+\-<>.,\[\]]//g;
-	my @line = split('', $_);
-	push(@program, @line);
+while (<>) {
+  s/[^+\-<>.,#\[\]]//g;
+  my @line = split('', $_);
+  push(@program, @line);
 }
+print STDERR "\n=====Program Output=====\n";
 
-
-# Init debug stuff
-
-my $temp_disable = 0;
-my $old_ctr = 0;
-my $ctr_time = 0;
-my $tmp_ctr_time = 0;
-my $time = time;
-my $break = 0;
-# $break_point = int( @program / 2 );
-if ($DEBUG) {
-	print "ptr: 0\n";
-}
-
-# MAIN PARSING LOOP
+# MAIN PARSING AND EXECUTION LOOP
 
 my $ptr = 0;
 my @mem = ();
-my $nested = 0;
 my @bufferin = ();
 for (my $counter = 0; $counter < @program; $counter++) {
-	
-	if ($counter == $break_point || $break) {
-		print_state(\@mem, \@program, $counter, $ptr, $nested);
-		exit if $break_final;
-		if ($break_step) {
-			$break_step = $break = step();
-		}
-	}
-	
-	# keep $counter from going out of bounds on first debug instruction
-	if ($counter < 2) {
-		if ($DEBUG && $counter == 0) {
-				$DEBUG = 0;
-				$temp_disable = "true";
-		}
-		if ($temp_disable) {
-			$DEBUG = "true";
-			$temp_disable = 0;
-		}
-	}
-	
-	
-	# MAIN PARSER
-	
-	if ($program[$counter] eq '+') {
-		$mem[$ptr] = ++$mem[$ptr] % 256;
-		#debug
-		if ($DEBUG && $program[$counter] ne $program[$counter + 1]) {
-			print "$program[$counter] mem: $mem[$ptr]\n";
-		}
-		
-	} elsif ($program[$counter] eq '-') {
-		$mem[$ptr] = --$mem[$ptr] % 256;
-		#debug
-		if ($DEBUG && $program[$counter] ne $program[$counter + 1]) {
-			print "$program[$counter] mem: $mem[$ptr]\n";
-		}
-		
-	} elsif ($program[$counter] eq '>') {
-		$ptr = ++$ptr % $MEMSIZE;
-		#debug
-		if ($DEBUG && $program[$counter] ne $program[$counter + 1]) {
-			unless (defined($mem[$ptr])) {
-				$mem[$ptr] = 0;
-			}
-			print "$program[$counter] ptr: $ptr, mem: $mem[$ptr]\n";
-		}
-		
-	} elsif ($program[$counter] eq '<') {
-		$ptr = --$ptr % $MEMSIZE;
-		#debug
-		if ($DEBUG && $program[$counter] ne $program[$counter + 1]) {
-			unless (defined($mem[$ptr])) {
-				$mem[$ptr] = 0;
-			}
-			print "$program[$counter] ptr: $ptr, mem: $mem[$ptr]\n";
-		}
-		
-	} elsif ($program[$counter] eq '.') {
-		if ($DEBUG) {
-			print "$program[$counter]\t\t";
-		}
-		if ($mem[$ptr]) {
-			print chr($mem[$ptr]);
-		}
-		#debug
-		if ($DEBUG) {
-			print "\n";
-		}
-		
-	} elsif ($program[$counter] eq ',') {
-		if ($buffer) {
-			unless (@bufferin) {
-				print "\n";
-				my $in = <STDIN>;
-				push(@bufferin, split('', $in));
-			}
-			$mem[$ptr] = ord(shift @bufferin);
-		} else {						# old, one-character-at-a-time way
-			print "\n";
-			my $in = <STDIN>;
-			$mem[$ptr] = ord($in);
-		}
-		#debug
-		if ($DEBUG) {
-			unless (defined($mem[$ptr])) {
-				$mem[$ptr] = 0;
-			}
-			print "$program[$counter] mem: $mem[$ptr]\n";
-		}
-		
-	} elsif ($program[$counter] eq '[') {
-		if ($DEBUG) {
-			$old_ctr = $counter;
-		}
-		unless ($mem[$ptr]) {
-			until ($program[$counter] eq ']' && $nested < 1) {
-				$counter++;
-				if ($program[$counter] eq '[') {
-					if ($DEBUG) {
-						print "$program[$counter] counter: $counter, " .
-							"nested: $nested\n";
-					}
-					$nested++;
-				} elsif ($nested && $program[$counter - 1] eq ']') {
-					if ($DEBUG) {
-						print "$program[$counter - 1] counter: $counter, " .
-							"nested: $nested\n";
-					}
-					$nested--;
-				}
-			}
-		}
-		#debug
-		if ($DEBUG) {
-			print "$program[$old_ctr] counter: $old_ctr -> $counter, " .
-				"mem: $mem[$ptr]\n";
-		}
-		
-	} elsif ($program[$counter] eq ']') {
-		if ($DEBUG) {
-			$old_ctr = $counter;
-		}
-		if ($mem[$ptr]) {
-			until ($program[$counter] eq '[' && $nested < 1) {
-				$counter--;
-				if ($program[$counter] eq ']') {
-					if ($DEBUG) {
-						print "$program[$counter] counter: $counter, " .
-							"nested: $nested\n";
-					}
-					$nested++;
-				} elsif ($nested && $program[$counter + 1] eq '[') {
-					if ($DEBUG) {
-						print "$program[$counter + 1] counter: $counter, " .
-							"nested: $nested\n";
-					}
-					$nested--;
-				}
-			}
-		}
-		#debug
-		if ($DEBUG) {
-			print "$program[$old_ctr] counter: $old_ctr -> $counter, " .
-				"mem: $mem[$ptr]\n";
-		}
-		
-	}
-	
-	# Try to weakly detect infinite loops
-	# Current setup: Every 10 seconds, turn on DEBUG for 100 instructions.
-	if ($LOOP_DETECT) {
-		$ctr_time++;
-		if ($ctr_time % 500_000 == 0) { #500_000 == 0) {
-			print $ctr_time, "\n";
-			if (time - $time > 5) {
-				$time = time;
-				unless ($mem[$ptr]) {
-					$mem[$ptr] = 0;
-				}
-				print "\ncounter: $counter, ptr: $ptr, mem: $mem[$ptr]\n" .
-					"instructions processed: $ctr_time\n";
-				$DEBUG = "on";
-				$tmp_ctr_time = 1;
-			}
-		}
-		if ($tmp_ctr_time) {
-			$tmp_ctr_time++;
-			if ($tmp_ctr_time > 7500) {
-				$DEBUG = 0;
-				$tmp_ctr_time = 0;
-			}
-		}
-	}
-	
+  
+  if ($program[$counter] eq '+') {
+    $mem[$ptr] = ++$mem[$ptr] % 256;
+    
+  } elsif ($program[$counter] eq '-') {
+    $mem[$ptr] = --$mem[$ptr] % 256;
+    
+  } elsif ($program[$counter] eq '>') {
+    $ptr = ++$ptr % $MEMSIZE;
+    
+  } elsif ($program[$counter] eq '<') {
+    $ptr = --$ptr % $MEMSIZE;
+    
+  } elsif ($program[$counter] eq '.') {
+    if ($mem[$ptr]) {
+      print chr($mem[$ptr]);
+    }
+    
+  } elsif ($program[$counter] eq ',') {
+    unless(@bufferin) {          # fill input buffer
+      print "\n";
+      chomp(my $in = <STDIN>);
+      push(@bufferin, split('', $in));
+    }
+    $mem[$ptr] = ord(shift @bufferin);
+    
+  } elsif ($program[$counter] eq '[') {
+    unless ($mem[$ptr]) {
+      my $nested = 1;
+      until ($nested < 1) {
+        $counter++;
+        if ($program[$counter] eq '[') {
+          $nested++;
+        } elsif ($program[$counter] eq ']') {
+          $nested--;
+        }
+      }
+    }
+    
+  } elsif ($program[$counter] eq ']') {
+    if ($mem[$ptr]) {
+      my $nested = 1;
+      until ($nested < 1) {
+        $counter--;
+        if ($program[$counter] eq ']') {
+          $nested++;
+        } elsif ($program[$counter] eq '[') {
+          $nested--;
+        }
+      }
+    }
+  } elsif ($program[$counter] eq '#') {
+    print_mem(\@mem, $ptr, \@program, $counter);
+  }
 }
 
-print_state(\@mem, \@program, $#program - 8, $ptr, $nested);
+# Prints current instruction offset and character, and contents of memory.
+# It determines the subset of memory to print
+sub print_mem {
+  my ($memref, $ptr, $progref, $counter) = @_;
+  my @mem = @$memref;
+  my @program = @$progref;
 
-
-
-
-sub print_state {
-	
-	my ($memref, $progref, $counter, $ptr, $nested) = @_;
-	
-	print "\n\tcounter: $counter, inst: $$progref[$counter]\n";
-	print_format($progref, $counter, "str");
-	if (defined($$memref[$ptr])) {
-		print "\n\tpointer: $ptr, value: $$memref[$ptr]\n";
-	} else {
-		print "\n\tpointer: $ptr, value: 0\n";
-	}
-	print_format($memref, $ptr, "num");
-	print "\n";
-	
-}
-
-sub print_format {
-	my ($arrayref, $pointer, $type) = @_;
-	
-	my $format;
-	my $format_std = "%3d ";
-	my $format_ctr = "|%2d|";
-	my $undef_val = "0";
-	if (defined($type) && lc $type =~ /str/) {
-		$type = "str";
-		$format_std = " %2s ";
-		$format_ctr = "|%2s |";
-		$undef_val = " ";
-		print " ";
-	} else {
-		$type = "num";
-	}
-	
-	if (@$arrayref < 20) {							# simple case
-		for my $location (0..$#{$arrayref}) {
-			printf "%3d ", $location;
-		}
-		print "\n";
-		for (my $ptr_walker = 0; $ptr_walker < 19; $ptr_walker++) {
-			my $value = $$arrayref[$ptr_walker];
-			unless (defined($value)) {
-				if ($ptr_walker < @$arrayref) {
-					$value = $undef_val;
-				} else {
-					$value = " ";
-					$format_std = "%3s ";
-					$format_ctr = "|%2s|";
-				}
-			}
-			if ($ptr_walker == $pointer) {
-				$format = $format_ctr;
-			} elsif ($ptr_walker == $pointer + 1 && $type eq "str") {
-				$format = "%2s ";
-			} else {
-				$format = $format_std;
-			}
-			printf $format, $value;
-		}
-		
-	} else {										# non-simple case
-		for my $location (($pointer - 9)..($pointer + 9)) {
-			printf "%3d ", $location;
-		}
-		print "\n";
-		for (my $ptr_walker = $pointer - 9; $ptr_walker - $pointer < 10; $ptr_walker++) {
-			my $value = $$arrayref[$ptr_walker];
-			if (defined($value)) {
-				if ($type eq "str") {
-					$value =~ s/[^+\-<>,.\[\]]/X/;
-				}
-			} elsif ($ptr_walker == @$arrayref && $type eq "str") {
-				$value = "EOF";
-			} else {
-				$value = $undef_val;
-			}
-			if ($ptr_walker == $pointer) {
-				$format = $format_ctr;
-			} elsif ($ptr_walker == $pointer + 1 && $type eq "str") {
-				$format = "%2s ";
-			} else {
-				$format = $format_std;
-			}
-			printf $format, $value;
-		}
-	}
-}
-
-sub step {
-	print "([enter] to step, \"go\" to proceed) ";
-	chomp(my $proceed = <STDIN>);
-	return lc $proceed ne "go";
+  # Want to talk about the instruction before the '#'
+  $counter--;
+  print "At instruction $counter ($program[$counter]), cell $ptr (";
+  if ($mem[$ptr] >= 32 && $mem[$ptr] <= 126) {
+    print chr($mem[$ptr]).")\n";
+  } else {
+    print "[$mem[$ptr]])\n";
+  }
+  my $large = '';
+  for my $i (0..(scalar(@mem)-1)) {
+    if ($i >= 80) {
+      $large = 1;
+      last;
+    }
+    my $byte = $mem[$i] || 0;
+    if ($byte >= 32 && $byte <= 126) {
+      print chr($byte);
+    } else {
+      print "[$byte]"
+    }
+  }
+  print "\n";
+  if ($large) {
+    print "... Memory too large to show: ".scalar(@mem)." cells\n";
+  }
 }
