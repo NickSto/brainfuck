@@ -4,7 +4,7 @@
 A brainfuck interpreter.
 
     USAGE:
-$ brainfuck.pl brainfuck-program.bf
+$ brainfuck.pl brainfuck-program.b
 or
 $ echo '++++++++++[>+++++++>++++++++++>+++>+<<<<-]>++.>+.+++++++..+++.>++.<<++++
 +++++++++++.>.+++.------.--------.>+.>.' | brainfuck.pl -i
@@ -42,14 +42,16 @@ my $PAUSE_DEFAULT = 0.25; # seconds
 my $PAUSE_FAST = 0.05;    # seconds
 my $MEMFILE_DEFAULT = 'memdump.dat';
 my $VALID_CHARS_DEFAULT = '+\-<>.,\[\]';
-my $OPTS = 'cdfimsw';
+my $OPTS = 'cdfhimsw';
+$Getopt::Std::STANDARD_HELP_VERSION = 1;
 
 my $valid_chars = $VALID_CHARS_DEFAULT;
 my $memfile = $MEMFILE_DEFAULT;
 my $has_args = @ARGV;
 
 my %opt;
-getopts($OPTS, \%opt);
+my $valid_opts = getopts($OPTS, \%opt);
+my $help    = $opt{h} || 0;
 my $debug   = $opt{d} || 0;
 my $stdin   = $opt{i} || 0;
 my $silent  = $opt{s} || 0;
@@ -62,10 +64,11 @@ my $pause   = $fast ? $PAUSE_FAST : $PAUSE_DEFAULT;
 # $watch is a permanent status, while $watch_now can toggle on each command
 my $watch_now = $watch;
 
-unless ($has_args) {
+HELP_MESSAGE() if ($help || ! $valid_opts || ! $has_args);
+sub HELP_MESSAGE {
   my $this = basename($0);
   print 'USAGE:
-  $ '.$this.' source-file.bf
+  $ '.$this.' source-file.b
 or
   $ echo \'++++++++++[>+++++++>++++++++++>+++>+<<<<-]>++.>+.+++++++..+++.>++.<<++
 +++++++++++++.>.+++.------.--------.>+.>.\' | '.$this.' -i
@@ -113,6 +116,10 @@ if ($stdin) {
 
 } else {
   # get script filename from first option
+  unless (@ARGV) {
+    print STDERR "Error: no input brainfuck script file provided.\n";
+    HELP_MESSAGE();
+  }
   my $script_filename = $ARGV[0];
   open(my $script_fh, '<', $script_filename) or
     die "Error: Cannot open brainfuck source file provided ($script_filename): $!";
