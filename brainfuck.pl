@@ -24,7 +24,7 @@ Comment removal:
 extra formatting and comments have no impact on speed.
 NOTE: Valid bf characters are only the canonical eight: +-<>[],.
 Unless running in debug mode, semi-official ones like # and ! will be removed.
-Debug mode will keep and interpret #.
+Debug mode will keep and interpret #, {, and }.
 
 Language implementation details:
   Cell values are 0 to 255 with wrapping.
@@ -38,17 +38,29 @@ use File::Basename;
 
 # Constants
 my $MEMSIZE = 30_000; # Number of memory cells
-my $OPTS = 'dis';
+my $PAUSE_DEFAULT = 0.25; # seconds
+my $PAUSE_FAST = 0.05;    # seconds
+my $MEMFILE_DEFAULT = 'memdump.dat';
 my $VALID_CHARS_DEFAULT = '+\-<>.,\[\]';
-my $valid_chars = $VALID_CHARS_DEFAULT;
+my $OPTS = 'cdfimsw';
 
+my $valid_chars = $VALID_CHARS_DEFAULT;
+my $memfile = $MEMFILE_DEFAULT;
 my $has_args = @ARGV;
+
 my %opt;
 getopts($OPTS, \%opt);
-my $debug  = $opt{d} || 0;
-my $stdin  = $opt{i} || 0;
-my $silent = $opt{s} || 0;
-if ($debug) { $valid_chars .= '#' }
+my $debug   = $opt{d} || 0;
+my $stdin   = $opt{i} || 0;
+my $silent  = $opt{s} || 0;
+my $watch   = $opt{w} || 0;
+my $compact = $opt{c} || 0;
+my $fast    = $opt{f} || 0;
+my $memdump = $opt{m} || 0;
+if ($debug) { $valid_chars .= '#{}' }
+my $pause   = $fast ? $PAUSE_FAST : $PAUSE_DEFAULT;
+# $watch is a permanent status, while $watch_now can toggle on each command
+my $watch_now = $watch;
 
 unless ($has_args) {
   my $this = basename($0);
@@ -62,7 +74,18 @@ Options:
 -s Silent: print nothing but the brainfuck output. Normally when -i is used,
    some prompts are printed to stderr.
 -d Debug: on encountering a # instruction, print memory state and other
-   execution state information.
+   execution state information. Also, { and } will toggle the -w flag.
+-w Watch: Slowly step through the program, printing the memory contents after
+   every instruction altering memory state.
+-f Fast: Speed up the -w stepping by 5x (50 ms between prints instead of 250 ms)
+-m Memdump: On exit (or Ctrl+C interrupt), print the contents of memory to a
+   file named "scriptname-memdump.dat" (or just "memdump.dat" if reading from
+   stdin). The file will be in binary format, one byte per cell.
+-c Compact: When using -d or -w, print memory contents in a compact fashion.
+   When the value of a cell is outside printable ASCII values, instead of
+   printing the numeric value, delimited by "|" characters, print a "." or, if
+   the value is below 16, print it in hexadecimal. This representation can be
+   ambiguous, but it\'s more compact and faster to read.
 ';
   exit(0);
 }
@@ -101,19 +124,30 @@ if ($stdin) {
     my @line = split('', $_);
     push(@program, @line);
   }
+
+  # create memdump filename based on brainfuck script name
+  if ($memdump) {
+    my @path_parts = split(/\./, $script_filename);
+    pop(@path_parts);
+    $memfile = join('.', @path_parts).'-'.$MEMFILE_DEFAULT;
+  }
+}
+if ($memdump && -e $memfile) {
+  print STDERR "Error: Memory dump file $memfile already exists.\n"
+    . "Please rename the existing file.\n";
+  exit(1);
 }
 
-# MAIN PARSING AND EXECUTION LOOP
 
-# my $line = <STDIN>;
-# print $line;
-# exit(0);
+########## MAIN LOOP ##########
 
 my $ptr = 0;
 my @mem = ();
 my @bufferin = ();
+my $last_print = 'none';
+$SIG{INT} = \&memdump if ($memdump);  # Call memdump() on ctrl-c interrupt
 for (my $counter = 0; $counter < @program; $counter++) {
-  
+
   if ($program[$counter] eq '+') {
     $mem[$ptr] = ++$mem[$ptr] % 256;
     
@@ -129,12 +163,16 @@ for (my $counter = 0; $counter < @program; $counter++) {
   } elsif ($program[$counter] eq '.') {
     if ($mem[$ptr]) {
       print chr($mem[$ptr]);
+      $last_print = 'normal';
     }
     
   } elsif ($program[$counter] eq ',') {
     unless(@bufferin) {       # fill input buffer
       my $in = <STDIN>;
-      exit(0) unless ($in);   # end of file
+      unless ($in) {
+        memdump($memfile, \@mem) if ($memdump);
+        exit(0);
+      }   # end of file
       push(@bufferin, split('', $in));
     }
     $mem[$ptr] = ord(shift @bufferin);
@@ -164,48 +202,133 @@ for (my $counter = 0; $counter < @program; $counter++) {
         }
       }
     }
-  } elsif ($debug && $program[$counter] eq '#') {
-    print_mem(\@mem, $ptr, \@program, $counter);
+
+  } elsif ($debug) {
+    if ($program[$counter] eq '#') {
+      print "\n" if ($last_print eq 'normal');
+      print_state(\@mem, $ptr, \@program, $counter, $compact);
+      $last_print = 'debug';
+    } elsif ($program[$counter] eq '{') {
+      $watch_now = 1;
+    } elsif ($program[$counter] eq '}' && ! $watch) {
+      $watch_now = 0;
+    }
+  }
+
+  if ($watch_now) {
+    # If memory value-altering instruction
+    if ($program[$counter] eq '+' ||
+        $program[$counter] eq '-' ||
+        $program[$counter] eq ',') {
+      print "\n" if ($last_print eq 'normal');
+      print_mem(\@mem, $ptr, $compact);
+      select(undef, undef, undef, $pause);
+      $last_print = 'debug';
+
+    # If pointer location-altering instruction
+    # (I don't know how to do this simply and efficiently without duplication)
+    } elsif ($program[$counter] eq '>' ||
+             $program[$counter] eq '<') {
+      print "\n" if ($last_print eq 'normal');
+      print_mem(\@mem, $ptr, $compact, $program[$counter]);
+      select(undef, undef, undef, $pause/4);
+      $last_print = 'debug';
+    }
   }
 }
 
+memdump($memfile, \@mem) if ($memdump);
+
+
+########## SUBROUTINES ##########
 
 # Prints current instruction offset and character, and contents of memory.
 # It determines the subset of memory to print
-sub print_mem {
-  my ($memref, $ptr, $progref, $counter) = @_;
-  my @mem = @$memref;
-  my @program = @$progref;
+sub print_state {
+  my ($memref, $ptr, $progref, $counter, $compact) = @_;
 
   # Want to talk about the instruction before the '#' (unless it's at the start)
   $counter = $counter ? $counter - 1 : $counter;
 
-  print "At instruction $counter ($program[$counter]), cell $ptr";
-  unless (@mem) {
-    print "\nmemory not initialized\n";
+  print STDERR "At instruction $counter ($$progref[$counter]), cell $ptr";
+  unless (@$memref) {
+    print STDERR "\nmemory not initialized\n";
     return;
   }
-  print " (";
-  if ($mem[$ptr] >= 32 && $mem[$ptr] <= 126) {
-    print chr($mem[$ptr]).")\n";
+  print STDERR " (";
+  my $byte = $$memref[$ptr] || 0;
+  if ($byte >= 32 && $byte <= 126) {
+    print STDERR chr($byte).")\n";
   } else {
-    print "[$mem[$ptr]])\n";
+    print STDERR "[$byte])\n";
   }
-  my $large = '';
-  for my $i (0..(scalar(@mem)-1)) {
-    if ($i >= 80) {
+
+  my $large = print_mem($memref, $ptr, $compact);
+  if ($large) {
+    print STDERR "... Memory too large to show: ".scalar(@$memref)." cells\n";
+  }
+}
+
+# Returns 1 if memory was too large to print all of it, 0 otherwise
+sub print_mem {
+  my ($memref, $ptr, $compact, $inst) = @_;
+
+  my $large = 0;
+  my $last_printable = 0;
+  my $out_str = '';
+  my $byte_str = '';
+  for my $i (0..(scalar(@$memref)-1)) {
+    my $byte = $$memref[$i] || 0;
+    $byte_str = '';
+    if ($inst && $i == $ptr) {
+      $byte_str = $inst;
+    } elsif ($byte >= 32 && $byte <= 126) {
+      $byte_str = chr($byte);
+      $last_printable = 1;
+    } elsif ($compact) {
+      if ($byte < 16) {
+        $byte_str = sprintf("%x", $byte);
+      } else {
+        $byte_str = '.';
+      }
+    } else {
+      if ($last_printable) {
+        $byte_str = '|';
+      }
+      $byte_str .= "$byte|";
+      $last_printable = 0;
+    }
+    if (length($out_str) + length($byte_str) > 80) {
       $large = 1;
       last;
-    }
-    my $byte = $mem[$i] || 0;
-    if ($byte >= 32 && $byte <= 126) {
-      print chr($byte);
     } else {
-      print "[$byte]"
+      $out_str .= $byte_str;
     }
   }
-  print "\n";
-  if ($large) {
-    print "... Memory too large to show: ".scalar(@mem)." cells\n";
+  if ($inst && $ptr >= @mem) {
+    my $excess = $ptr - @mem;
+    if (length($out_str) + $excess + 1 < 80) {
+      $out_str .= ' ' x $excess . $inst;
+    }
   }
+  print STDERR "$out_str\n";
+
+  return $large;
+}
+
+# Print entire memory to file
+sub memdump {
+  if (-e $memfile) {
+    print STDERR "Error: Memory dump file $memfile already exists.\n"
+      . "Please rename the existing file.\n";
+    exit(1);
+  } else {
+    open(my $mem_fh, '>', $memfile) or
+      die "Error: Could not open memory dump file $memfile: $!";
+    for my $byte (@mem) {
+      $byte = 0 unless ($byte);
+      print $mem_fh pack('C', $byte);
+    }
+  }
+  exit(0);
 }
